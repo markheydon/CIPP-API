@@ -56,7 +56,7 @@ Function Invoke-ExecExtensionTest {
                 $Payload = 'This is a test from CIPP'
                 $PasswordLink = New-PwPushLink -Payload $Payload
                 if ($PasswordLink) {
-                    $Results = [pscustomobject]@{'Results' = 'Successfully generated PWPush'; 'Link' = $PasswordLink }
+                    $Results = [pscustomobject]@{Results = @(@{'resultText' = 'Successfully generated PWPush, hit the Copy to Clipboard button to retrieve the test.'; 'copyField' = $PasswordLink; 'state' = 'success' }) }
                 } else {
                     $Results = [pscustomobject]@{'Results' = 'PWPush is not enabled' }
                 }
@@ -83,7 +83,7 @@ Function Invoke-ExecExtensionTest {
                 $Results = [pscustomobject]@{'Results' = 'Successfully Connected to HIBP' }
             }
             'GitHub' {
-                $GitHubResponse = Invoke-GitHubApiRequest -Configuration $Configuration.GitHub -Method 'GET' -Path 'user'
+                $GitHubResponse = Invoke-GitHubApiRequest -Method 'GET' -Path 'user'
                 if ($GitHubResponse.login) {
                     $Results = [pscustomobject]@{ 'Results' = "Successfully connected to GitHub user: $($GitHubResponse.login)" }
                 } else {
