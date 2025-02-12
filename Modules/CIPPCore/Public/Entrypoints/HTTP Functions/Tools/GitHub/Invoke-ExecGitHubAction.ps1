@@ -12,14 +12,76 @@ function Invoke-ExecGitHubAction {
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
 
-    if ($Request.Body.Search) {
-        $Search = $Request.Body.Search | ConvertTo-Json | ConvertFrom-Json -AsHashtable
-        $SearchResults = Search-GitHub @Search
-        $Results = $SearchResults.items
-        $Metadata = $SearchResults | Select-Object -Property total_count, incomplete_results
-    } elseif ($Request.Body.GetFileContents) {
-        $Url = $Request.Body.GetFileContents.Url
-        $Results = Get-GitHubFileContents -Url $Url
+    $Action = $Request.Query.Action ?? $Request.Body.Action
+
+    if ($Request.Query.Action) {
+        $Parameters = $Request.Query
+    } else {
+        $Parameters = $Request.Body
+    }
+
+    $SplatParams = $Parameters | Select-Object -ExcludeProperty Action, TenantFilter | ConvertTo-Json | ConvertFrom-Json -AsHashtable
+
+    $Table = Get-CIPPTable -TableName Extensionsconfig
+    $Configuration = ((Get-CIPPAzDataTableEntity @Table).config | ConvertFrom-Json).GitHub
+
+    if (!$Configuration.Enabled) {
+        $Response = Invoke-RestMethod -Uri 'https://cippy.azurewebsites.net/api/ExecGitHubAction' -Method POST -Body ($Action | ConvertTo-Json -Depth 10) -ContentType 'application/json'
+        $Results = $Response.Results
+        $Metadata = $Response.Metadata
+    } else {
+        switch ($Action) {
+            'Search' {
+                $SearchResults = Search-GitHub @SplatParams
+                $Results = @($SearchResults.items)
+                $Metadata = $SearchResults | Select-Object -Property total_count, incomplete_results
+            }
+            'GetFileContents' {
+                $Results = Get-GitHubFileContents @SplatParams
+            }
+            'GetBranches' {
+                $Results = @(Get-GitHubBranch @SplatParams)
+            }
+            'GetOrgs' {
+                $Orgs = Invoke-GitHubApiRequest -Path 'user/orgs'
+                $Results = @($Orgs)
+            }
+            'GetFileTree' {
+                $Files = (Get-GitHubFileTree @SplatParams).tree | Where-Object { $_.path -match '.json$' } | Select-Object *, @{n = 'html_url'; e = { "https://github.com/$($SplatParams.FullName)/tree/$($SplatParams.Branch)/$($_.path)" } }
+                $Results = @($Files)
+            }
+            'ImportTemplate' {
+                $Results = Import-CommunityTemplate @SplatParams
+            }
+            'CreateRepo' {
+                $Repo = New-GitHubRepo @SplatParams
+                if ($Results.id) {
+                    $Table = Get-CIPPTable -TableName CommunityRepos
+                    $RepoEntity = @{
+                        PartitionKey  = 'CommunityRepos'
+                        RowKey        = [string]$Repo.id
+                        Name          = [string]$Repo.name
+                        Description   = [string]$Repo.description
+                        URL           = [string]$Repo.html_url
+                        FullName      = [string]$Repo.full_name
+                        Owner         = [string]$Repo.owner.login
+                        Visibility    = [string]$Repo.visibility
+                        WriteAccess   = [bool]$Repo.permissions.push
+                        DefaultBranch = [string]$Repo.default_branch
+                        Permissions   = [string]($Repo.permissions | ConvertTo-Json -Compress)
+                    }
+                    Add-CIPPAzDataTableEntity @Table -Entity $RepoEntity -Force | Out-Null
+
+                    $Results = @{
+                        resultText = "Repository '$($Results.name)' created"
+                        state      = 'success'
+                    }
+                }
+            }
+            default {
+                $Results = "Error: Unknown action '$Action'"
+            }
+        }
     }
 
     $Body = @{
@@ -30,7 +92,7 @@ function Invoke-ExecGitHubAction {
     }
 
     Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
-        StatusCode = [HttpStatusCode]::OK
-        Body       = $Body
-    })
+            StatusCode = [HttpStatusCode]::OK
+            Body       = $Body
+        })
 }
